@@ -13,5 +13,7 @@ langchain-community
 langchain-huggingface
 langchain-groq
 chromadb
-
-
+torch==2.2.2
+torchvision==0.17.2
+transformers
+langchain>=0.1.0

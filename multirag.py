@@ -998,7 +998,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.schema import Document
 from langchain_groq import ChatGroq
-
+from langchain.retrievers.ensemble import EnsembleRetriever
 import uuid
 
 
