@@ -1117,7 +1117,7 @@ def process_pdf(uploaded_file):
             text = page.extract_text()
 
             # FIX: faster OCR
-            if not text or len(text.strip()) < 50:
+            if not text or len(text.strip()) < 20:
                 try:
                     img = page.to_image(resolution=150)
                     img = preprocess_image(img.original)
@@ -1127,7 +1127,7 @@ def process_pdf(uploaded_file):
 
             text = clean_text(text)
 
-            if len(text) > 50:
+            if text and len(text.strip()) > 10:
                 docs.append(Document(page_content=text, metadata={"page": i+1}))
 
     if not docs:
