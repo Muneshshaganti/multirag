@@ -1,0 +1,17 @@
+streamlit
+python-dotenv
+requests
+pdfplumber
+pytesseract
+opencv-python-headless
+numpy
+Pillow
+langdetect
+sentence-transformers
+langchain
+langchain-community
+langchain-huggingface
+langchain-groq
+chromadb
+
+
