@@ -1160,7 +1160,53 @@ def process_pdf(uploaded_file):
     # FIX: stronger retrieval
 def process_pdf(uploaded_file):
     
-    # ... your earlier code ...
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(uploaded_file.read())
+        path = tmp.name
+
+    docs = []
+
+    with pdfplumber.open(path) as pdf:
+        for i, page in enumerate(pdf.pages):
+
+            text = page.extract_text()
+
+            if not text or len(text.strip()) < 20:
+                try:
+                    img = page.to_image(resolution=150)
+                    img = preprocess_image(img.original)
+                    text = pytesseract.image_to_string(img)
+                except:
+                    text = ""
+
+            text = clean_text(text)
+
+            if text and len(text.strip()) > 10:
+                docs.append(Document(page_content=text, metadata={"page": i+1}))
+
+    if not docs:
+        st.error("❌ No text extracted from PDF")
+        return None, None
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=200
+    )
+
+    chunks = splitter.split_documents(docs)
+
+    if not chunks:
+        st.error("❌ No chunks created")
+        return None, None
+
+    # ✅ important fix
+    chunks = [c for c in chunks if c.page_content.strip()]
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name="BAAI/bge-base-en-v1.5"
+    )
+
+    db_path = f"chroma_{uuid.uuid4().hex}"
 
     vectordb = Chroma.from_documents(
         chunks,
@@ -1168,10 +1214,7 @@ def process_pdf(uploaded_file):
         persist_directory=db_path
     )
 
-    # ✅ THIS BLOCK MUST BE INDENTED INSIDE FUNCTION
     vector_retriever = vectordb.as_retriever(search_kwargs={"k": 30})
-
-    chunks = [c for c in chunks if c.page_content and c.page_content.strip()]
 
     try:
         bm25 = BM25Retriever.from_documents(chunks)
@@ -1183,7 +1226,7 @@ def process_pdf(uploaded_file):
     retrievers = [vector_retriever]
     weights = [1.0]
 
-    if bm25:
+    if bm25 is not None:
         retrievers.append(bm25)
         weights = [0.5, 0.5]
 
@@ -1195,7 +1238,6 @@ def process_pdf(uploaded_file):
     reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     return retriever, reranker
-
 # ---------------- UI ----------------
 
 st.title("⚖️ Legal RAG System")
