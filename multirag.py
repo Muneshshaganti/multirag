@@ -1395,9 +1395,9 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.schema import Document
 from langchain_groq import ChatGroq
+import uuid
 
 
-# ---------------- KEY LOADER ----------------
 def get_key(key_name):
     value = os.getenv(key_name)
     if not value:
@@ -1405,7 +1405,6 @@ def get_key(key_name):
     return value
 
 
-# ---------------- ENV ----------------
 GROQ_API_KEY = get_key("GROQ_API_KEY")
 OPENAI_API_KEY = get_key("OPENAI_API_KEY")
 HUGGINGFACE_API_KEY = get_key("HUGGINGFACE_API_KEY")
@@ -1413,7 +1412,6 @@ HUGGINGFACE_API_KEY = get_key("HUGGINGFACE_API_KEY")
 openrouter_available = bool(OPENAI_API_KEY)
 
 
-# ---------------- GROQ ----------------
 if "groq" not in st.session_state:
     st.session_state.groq = ChatGroq(
         groq_api_key=GROQ_API_KEY,
@@ -1422,21 +1420,7 @@ if "groq" not in st.session_state:
     )
 
 
-# ---------------- CACHE MODELS ----------------
-@st.cache_resource
-def load_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="BAAI/bge-base-en-v1.5"
-    )
-
-@st.cache_resource
-def load_reranker():
-    return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-
-
-# ---------------- MULTI LLM ----------------
 def multi_llm(prompt):
-
     try:
         response = st.session_state.groq.invoke(prompt)
         if response.content and response.content.strip():
@@ -1464,10 +1448,15 @@ def multi_llm(prompt):
         except:
             pass
 
-    return "❌ AI response failed."
+    try:
+        from transformers import pipeline
+        generator = pipeline("text2text-generation", model="google/flan-t5-base")
+        result = generator(prompt, max_length=512)
+        return result[0]["generated_text"]
+    except:
+        return "❌ All AI APIs failed."
 
 
-# ---------------- SESSION ----------------
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -1480,8 +1469,6 @@ if "reranker" not in st.session_state:
 if "current_file" not in st.session_state:
     st.session_state.current_file = None
 
-
-# ---------------- FUNCTIONS ----------------
 
 def detect_language(text):
     try:
@@ -1507,6 +1494,12 @@ def preprocess_image(img):
     return Image.fromarray(thresh)
 
 
+def reset_chroma():
+    for folder in os.listdir():
+        if folder.startswith("chroma_"):
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def process_pdf(uploaded_file):
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -1517,10 +1510,9 @@ def process_pdf(uploaded_file):
 
     with pdfplumber.open(path) as pdf:
         for i, page in enumerate(pdf.pages):
-
             text = page.extract_text()
 
-            if not text:
+            if not text or len(text.strip()) < 20:
                 try:
                     img = page.to_image(resolution=150)
                     img = preprocess_image(img.original)
@@ -1543,21 +1535,31 @@ def process_pdf(uploaded_file):
     )
 
     chunks = splitter.split_documents(docs)
+
+    if not chunks:
+        st.error("❌ No chunks created")
+        return None, None
+
     chunks = [c for c in chunks if c.page_content.strip()]
 
-    embeddings = load_embeddings()
-
-    # ✅ FIX: No persist_directory (avoids SQLite error)
-    vectordb = Chroma.from_documents(
-        chunks,
-        embeddings
+    embeddings = HuggingFaceEmbeddings(
+        model_name="BAAI/bge-base-en-v1.5"
     )
 
-    vector_retriever = vectordb.as_retriever(search_kwargs={"k": 10})
+    db_path = f"chroma_{uuid.uuid4().hex}"
+
+    vectordb = Chroma.from_documents(
+        chunks,
+        embeddings,
+        persist_directory=db_path,
+        collection_name=str(uuid.uuid4())  # ✅ FIX
+    )
+
+    vector_retriever = vectordb.as_retriever(search_kwargs={"k": 30})
 
     try:
         bm25 = BM25Retriever.from_documents(chunks)
-        bm25.k = 10
+        bm25.k = 25
     except:
         bm25 = None
 
@@ -1573,87 +1575,7 @@ def process_pdf(uploaded_file):
         weights=weights
     )
 
-    reranker = load_reranker()
+    reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     return retriever, reranker
 
-
-def rerank(query, docs, reranker, top_k=5):
-    pairs = [[query, d.page_content] for d in docs]
-    scores = reranker.predict(pairs)
-    scored = list(zip(docs, scores))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [x[0] for x in scored[:top_k]]
-
-
-# ---------------- UI ----------------
-
-st.title("⚖️ Legal RAG System")
-
-file = st.file_uploader("Upload PDF", type="pdf")
-
-# Reset on new file
-if file and file.name != st.session_state.current_file:
-    st.session_state.retriever = None
-    st.session_state.reranker = None
-    st.session_state.current_file = file.name
-    st.session_state.chat_history = []
-
-if file:
-
-    if st.session_state.retriever is None:
-        with st.spinner("Processing PDF..."):
-            r, rr = process_pdf(file)
-
-            if r is None:
-                st.stop()
-
-            st.session_state.retriever = r
-            st.session_state.reranker = rr
-
-        st.success("✅ PDF processed")
-
-    q = st.chat_input("Ask your question...")
-
-    if q:
-
-        lang = detect_language(q)
-
-        if lang == "te":
-            q = multi_llm(f"Translate Telugu to English:\n{q}")
-        elif lang == "hi":
-            q = multi_llm(f"Translate Hindi to English:\n{q}")
-
-        queries = [q]
-
-        all_docs = []
-        for query in queries:
-            all_docs.extend(st.session_state.retriever.invoke(query))
-
-        docs = list({d.page_content: d for d in all_docs}.values())
-        docs = rerank(q, docs, st.session_state.reranker)
-
-        if docs:
-            context = ""
-            for d in docs:
-                context += f"\n--- PAGE {d.metadata.get('page')} ---\n{d.page_content}\n"
-
-            prompt = f"""
-Use ONLY the context.
-Do NOT guess.
-
-Context:
-{context}
-
-Question:
-{q}
-
-Answer:
-"""
-            ans = multi_llm(prompt)
-
-            st.chat_message("user").write(q)
-            st.chat_message("assistant").write(ans)
-
-        else:
-            st.chat_message("assistant").write("Not enough information")
