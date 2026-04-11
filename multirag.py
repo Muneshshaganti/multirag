@@ -998,7 +998,6 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.schema import Document
 from langchain_groq import ChatGroq
-from langchain.retrievers.ensemble import EnsembleRetriever
 import uuid
 
 
@@ -1159,28 +1158,43 @@ def process_pdf(uploaded_file):
     )
 
     # FIX: stronger retrieval
+def process_pdf(uploaded_file):
+    
+    # ... your earlier code ...
+
+    vectordb = Chroma.from_documents(
+        chunks,
+        embeddings,
+        persist_directory=db_path
+    )
+
+    # ✅ THIS BLOCK MUST BE INDENTED INSIDE FUNCTION
     vector_retriever = vectordb.as_retriever(search_kwargs={"k": 30})
 
-    bm25 = BM25Retriever.from_documents(chunks)
-    bm25.k = 25
+    chunks = [c for c in chunks if c.page_content and c.page_content.strip()]
+
+    try:
+        bm25 = BM25Retriever.from_documents(chunks)
+        bm25.k = 25
+    except Exception as e:
+        st.error(f"BM25 failed: {str(e)}")
+        bm25 = None
+
+    retrievers = [vector_retriever]
+    weights = [1.0]
+
+    if bm25:
+        retrievers.append(bm25)
+        weights = [0.5, 0.5]
 
     retriever = EnsembleRetriever(
-        retrievers=[bm25, vector_retriever],
-        weights=[0.5, 0.5]
+        retrievers=retrievers,
+        weights=weights
     )
 
     reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     return retriever, reranker
-
-
-def rerank(query, docs, reranker, top_k=8):
-    pairs = [[query, d.page_content] for d in docs]
-    scores = reranker.predict(pairs)
-    scored = list(zip(docs, scores))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [x[0] for x in scored[:top_k]]
-
 
 # ---------------- UI ----------------
 
