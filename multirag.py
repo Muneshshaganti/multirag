@@ -1375,7 +1375,7 @@ import streamlit as st
 import tempfile
 import re
 import requests
-import shutil  # ✅ ADDED
+import shutil
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=".env")
 
@@ -1395,7 +1395,6 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.schema import Document
 from langchain_groq import ChatGroq
-import uuid
 
 
 # ---------------- KEY LOADER ----------------
@@ -1421,6 +1420,18 @@ if "groq" not in st.session_state:
         model_name="llama-3.3-70b-versatile",
         temperature=0
     )
+
+
+# ---------------- CACHE MODELS ----------------
+@st.cache_resource
+def load_embeddings():
+    return HuggingFaceEmbeddings(
+        model_name="BAAI/bge-base-en-v1.5"
+    )
+
+@st.cache_resource
+def load_reranker():
+    return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
 # ---------------- MULTI LLM ----------------
@@ -1453,13 +1464,7 @@ def multi_llm(prompt):
         except:
             pass
 
-    try:
-        from transformers import pipeline
-        generator = pipeline("text2text-generation", model="google/flan-t5-base")
-        result = generator(prompt, max_length=512)
-        return result[0]["generated_text"]
-    except:
-        return "❌ All AI APIs failed."
+    return "❌ AI response failed."
 
 
 # ---------------- SESSION ----------------
@@ -1472,7 +1477,7 @@ if "retriever" not in st.session_state:
 if "reranker" not in st.session_state:
     st.session_state.reranker = None
 
-if "current_file" not in st.session_state:  # ✅ ADDED
+if "current_file" not in st.session_state:
     st.session_state.current_file = None
 
 
@@ -1502,13 +1507,6 @@ def preprocess_image(img):
     return Image.fromarray(thresh)
 
 
-# ✅ RESET CHROMA (MAIN FIX)
-def reset_chroma():
-    for folder in os.listdir():
-        if folder.startswith("chroma_"):
-            shutil.rmtree(folder, ignore_errors=True)
-
-
 def process_pdf(uploaded_file):
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -1522,7 +1520,7 @@ def process_pdf(uploaded_file):
 
             text = page.extract_text()
 
-            if not text or len(text.strip()) < 20:
+            if not text:
                 try:
                     img = page.to_image(resolution=150)
                     img = preprocess_image(img.original)
@@ -1545,30 +1543,21 @@ def process_pdf(uploaded_file):
     )
 
     chunks = splitter.split_documents(docs)
-
-    if not chunks:
-        st.error("❌ No chunks created")
-        return None, None
-
     chunks = [c for c in chunks if c.page_content.strip()]
 
-    embeddings = HuggingFaceEmbeddings(
-        model_name="BAAI/bge-base-en-v1.5"
-    )
+    embeddings = load_embeddings()
 
-    db_path = f"chroma_{uuid.uuid4().hex}"
-
+    # ✅ FIX: No persist_directory (avoids SQLite error)
     vectordb = Chroma.from_documents(
         chunks,
-        embeddings,
-        persist_directory=db_path
+        embeddings
     )
 
-    vector_retriever = vectordb.as_retriever(search_kwargs={"k": 30})
+    vector_retriever = vectordb.as_retriever(search_kwargs={"k": 10})
 
     try:
         bm25 = BM25Retriever.from_documents(chunks)
-        bm25.k = 25
+        bm25.k = 10
     except:
         bm25 = None
 
@@ -1584,12 +1573,12 @@ def process_pdf(uploaded_file):
         weights=weights
     )
 
-    reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    reranker = load_reranker()
 
     return retriever, reranker
 
 
-def rerank(query, docs, reranker, top_k=8):
+def rerank(query, docs, reranker, top_k=5):
     pairs = [[query, d.page_content] for d in docs]
     scores = reranker.predict(pairs)
     scored = list(zip(docs, scores))
@@ -1601,16 +1590,14 @@ def rerank(query, docs, reranker, top_k=8):
 
 st.title("⚖️ Legal RAG System")
 
-file = st.file_uploader("Upload PDF", type="pdf", key="pdf_uploader")
+file = st.file_uploader("Upload PDF", type="pdf")
 
-# ✅ MAIN FIX: detect new file upload
+# Reset on new file
 if file and file.name != st.session_state.current_file:
-    reset_chroma()
     st.session_state.retriever = None
     st.session_state.reranker = None
     st.session_state.current_file = file.name
     st.session_state.chat_history = []
-
 
 if file:
 
@@ -1637,12 +1624,7 @@ if file:
         elif lang == "hi":
             q = multi_llm(f"Translate Hindi to English:\n{q}")
 
-        queries_text = multi_llm(f"Generate 5 search queries for:\n{q}")
-        queries = [x.strip() for x in queries_text.split("\n") if x.strip()]
-        queries.append(q)
-
-        if any(char.isdigit() for char in q):
-            queries.append(q + " number details Aadhaar mobile passbook")
+        queries = [q]
 
         all_docs = []
         for query in queries:
@@ -1658,7 +1640,6 @@ if file:
 
             prompt = f"""
 Use ONLY the context.
-If numbers exist, extract EXACTLY.
 Do NOT guess.
 
 Context:
@@ -1671,50 +1652,8 @@ Answer:
 """
             ans = multi_llm(prompt)
 
-            sources = list(set([d.metadata.get("page", "N/A") for d in docs]))
-
-            st.session_state.chat_history.append({
-                "question": q,
-                "answer": ans,
-                "sources": sources
-            })
-
-            if len(st.session_state.chat_history) > 10:
-                st.session_state.chat_history.pop(0)
-
             st.chat_message("user").write(q)
             st.chat_message("assistant").write(ans)
 
         else:
             st.chat_message("assistant").write("Not enough information")
-
-
-    if st.session_state.chat_history:
-        last = st.session_state.chat_history[-1]["answer"]
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button("Telugu"):
-                st.write(multi_llm(f"Translate to Telugu:\n{last}"))
-
-        with col2:
-            if st.button("Hindi"):
-                st.write(multi_llm(f"Translate to Hindi:\n{last}"))
-
-    if "model_used" in st.session_state:
-        st.info(f"🤖 Model Used: {st.session_state['model_used']}")
-
-
-# ---------------- SIDEBAR ----------------
-
-st.sidebar.title("📚 Chat History")
-
-if st.session_state.chat_history:
-    for i, item in enumerate(reversed(st.session_state.chat_history)):
-        with st.sidebar.expander(f"Q: {item['question']}"):
-            st.markdown(f"**Question:** {item['question']}")
-            st.markdown(f"**Answer:** {item['answer']}")
-            st.markdown(f"**Source Pages:** {item['sources']}")
-else:
-    st.sidebar.info("No history yet")
