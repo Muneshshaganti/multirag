@@ -8,7 +8,12 @@ numpy==1.26.4
 Pillow
 langdetect
 sentence-transformers
-chromadb
+
+# 🔥 FIXED VERSIONS (IMPORTANT)
+chromadb==0.4.24
+protobuf==3.20.3
+opentelemetry-api==1.25.0
+opentelemetry-sdk==1.25.0
 
 torch
 torchvision
