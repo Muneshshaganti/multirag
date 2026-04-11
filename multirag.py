@@ -1238,6 +1238,12 @@ def process_pdf(uploaded_file):
     reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     return retriever, reranker
+def rerank(query, docs, reranker, top_k=8):
+    pairs = [[query, d.page_content] for d in docs]
+    scores = reranker.predict(pairs)
+    scored = list(zip(docs, scores))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [x[0] for x in scored[:top_k]]
 # ---------------- UI ----------------
 
 st.title("⚖️ Legal RAG System")
